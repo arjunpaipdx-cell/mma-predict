@@ -3,7 +3,8 @@
 Every feature for a fight is computed only from that fighter's *earlier* fights.
 The heavy part, per-fighter cumulative aggregation over ~18k fighter-fights × 30
 stat columns, runs on cuDF when a GPU is present. Elo is a sequential update, so
-it stays on the CPU.
+it stays on the CPU
+(see ratings.py). Strength-of-schedule metrics are built on top of both.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from . import backend as B
+from . import ratings as RT
 
 SUMS = [
     "sig_l", "sig_a", "td_l", "td_a", "kd", "sub_att", "ctrl", "head_l", "body_l", "leg_l",
@@ -32,31 +34,7 @@ RATE_COLS = [
 ]
 
 
-# ---------------------------------------------------------------- Elo (CPU)
-def add_elo(long: pd.DataFrame, fights: pd.DataFrame, k: float = 40.0) -> tuple[pd.DataFrame, dict]:
-    """Pre-fight Elo for every (fight, fighter); returns current ratings too."""
-    elo: dict[str, float] = {}
-    n: dict[str, int] = {}
-    rows = []
-    for fid, a, b, y, m in fights[["fight_id", "a", "b", "a_win", "method"]].itertuples(index=False):
-        ra, rb = elo.get(a, 1500.0), elo.get(b, 1500.0)
-        rows.append((fid, a, ra))
-        rows.append((fid, b, rb))
-        if y != y:  # NaN: draw/NC
-            if m is not None:
-                y = 0.5
-            else:
-                continue
-        ea = 1.0 / (1.0 + 10 ** ((rb - ra) / 400.0))
-        mult = 1.2 if m in ("KO", "SUB") else 1.0
-        ka = k * (1.5 if n.get(a, 0) < 5 else 1.0) * mult
-        kb = k * (1.5 if n.get(b, 0) < 5 else 1.0) * mult
-        elo[a] = ra + ka * (y - ea)
-        elo[b] = rb - kb * (y - ea)
-        n[a] = n.get(a, 0) + 1
-        n[b] = n.get(b, 0) + 1
-    pre = pd.DataFrame(rows, columns=["fight_id", "fighter", "elo"])
-    return long.merge(pre, on=["fight_id", "fighter"], how="left"), elo
+# Elo and Glicko-2 live in ratings.py (sequential updates, CPU).
 
 
 # ------------------------------------------------- cumulative sums (cuDF/pandas)
@@ -178,18 +156,83 @@ def rates(pre: pd.DataFrame, P: dict) -> pd.DataFrame:
     return r
 
 
+
+# ------------------------------------------------------- strength of schedule
+SOS_COLS = ["sos_elo", "win_q", "loss_q", "adj_sl", "adj_sa", "adj_td", "top_wins"]
+PRIOR_OPP = 2.0  # pseudo-fights at an average (1500) opponent
+
+
+def schedule(long: pd.DataFrame, rt_pre: pd.DataFrame, per: pd.DataFrame, P: dict) -> pd.DataFrame:
+    """Strength-of-schedule metrics per (fight, fighter), both before and after that fight.
+
+    sos_elo  average pre-fight Elo of every opponent faced
+    win_q    average Elo of opponents beaten ("quality of wins")
+    loss_q   average Elo of opponents lost to (losing to elite fighters is forgivable)
+    top_wins number of wins over opponents rated 1600+ at the time
+    adj_sl   sig. strikes landed per minute ABOVE what each opponent usually absorbs
+    adj_sa   sig. strikes absorbed per minute ABOVE what each opponent usually lands
+    adj_td   takedowns per 15 min above what each opponent usually concedes
+    The adj_* stats are opponent-adjusted: 5 strikes/min against elite defenders
+    counts for more than 5 strikes/min against weak ones.
+    """
+    d = long[["fight_id", "fighter", "opp", "date", "win", "sig_l", "opp_sig_l", "td_l",
+              "fight_secs", "has_stats"]].merge(rt_pre[["fight_id", "fighter", "opp_elo"]],
+                                                on=["fight_id", "fighter"], how="left")
+    o = per[["fight_id", "fighter", "slpm", "sapm", "td_def"]].rename(
+        columns={"fighter": "opp", "slpm": "o_slpm", "sapm": "o_sapm", "td_def": "o_td_def"})
+    d = d.merge(o, on=["fight_id", "opp"], how="left")
+    mins = d["fight_secs"].fillna(0) / 60 * d["has_stats"]
+    td_allowed = P["td15"] / 15 * (1 - d["o_td_def"]) / (1 - P["td_def"])
+    d["n"] = 1.0
+    d["w"] = (d["win"] == 1).astype(float)
+    d["l"] = (d["win"] == 0).astype(float)
+    d["oe"] = d["opp_elo"]
+    d["oe_w"] = d["opp_elo"] * d["w"]
+    d["oe_l"] = d["opp_elo"] * d["l"]
+    d["top_w"] = ((d["opp_elo"] >= 1600) & (d["w"] == 1)).astype(float)
+    d["m"] = mins
+    d["r_sl"] = (d["sig_l"] - d["o_sapm"] * mins) * d["has_stats"]
+    d["r_sa"] = (d["opp_sig_l"] - d["o_slpm"] * mins) * d["has_stats"]
+    d["r_td"] = (d["td_l"] - td_allowed * mins) * d["has_stats"]
+    cols = ["n", "w", "l", "oe", "oe_w", "oe_l", "top_w", "m", "r_sl", "r_sa", "r_td"]
+    d = d.sort_values(["fighter", "date", "fight_id"]).reset_index(drop=True)
+    post = d.groupby("fighter", sort=False)[cols].cumsum()
+    pre = post - d[cols]
+
+    def metrics(c):
+        k = PRIOR_OPP
+        return pd.DataFrame({
+            "sos_elo": (c["oe"] + 1500 * k) / (c["n"] + k),
+            "win_q": (c["oe_w"] + 1500 * k) / (c["w"] + k),
+            "loss_q": (c["oe_l"] + 1500 * k) / (c["l"] + k),
+            "top_wins": c["top_w"],
+            "adj_sl": c["r_sl"] / (c["m"] + PRIOR_MIN),
+            "adj_sa": c["r_sa"] / (c["m"] + PRIOR_MIN),
+            "adj_td": c["r_td"] * 15 / (c["m"] + PRIOR_MIN),
+        })
+
+    out = pd.concat([d[["fight_id", "fighter", "date"]], metrics(pre),
+                     metrics(post).add_prefix("post_")], axis=1)
+    return out
+
 # --------------------------------------------------------- matchup builder
+SWAP_COLS = ("elo", "age", "n_prior", "g_rd", "sos_elo")
+
+
 def matchup_features(A: pd.DataFrame, Bf: pd.DataFrame) -> pd.DataFrame:
     """A and B are aligned per-fighter frames (rates + elo + age/reach/height/days_off)."""
     X = pd.DataFrame(index=A.index)
-    for c in RATE_COLS + ["elo", "age", "reach", "height", "days_off", "n_prior"]:
+    for c in RATE_COLS + SOS_COLS + ["elo", "g_r", "age", "reach", "height", "days_off", "n_prior"]:
         X[f"d_{c}"] = A[c].values - Bf[c].values
     # A's offense vs B's defense interactions (what the simulator also uses)
     X["d_strike_edge"] = (A["slpm"].values - Bf["sapm"].values) - (Bf["slpm"].values - A["sapm"].values)
     X["d_ko_edge"] = A["ko_off"].values * Bf["ko_def"].values - Bf["ko_off"].values * A["ko_def"].values
     X["d_sub_edge"] = A["sub_off"].values * Bf["sub_def"].values - Bf["sub_off"].values * A["sub_def"].values
     X["d_grap_edge"] = (A["td15"].values * (1 - Bf["td_def"].values)) - (Bf["td15"].values * (1 - A["td_def"].values))
-    for c in ("elo", "age", "n_prior"):
+    # Glicko-2 win probability (log-odds), with both fighters' rating uncertainty
+    p_g = RT.glicko_prob(A["g_r"].values, A["g_rd"].values, Bf["g_r"].values, Bf["g_rd"].values)
+    X["d_glicko_logit"] = np.log(p_g / (1 - p_g))
+    for c in SWAP_COLS:
         X[f"a_{c}"] = A[c].values
         X[f"b_{c}"] = Bf[c].values
     return X
@@ -207,13 +250,15 @@ def _physicals(frame: pd.DataFrame, fighters: pd.DataFrame, on_date: pd.Series) 
 
 def build_training_table(fights, long, fighters, prior_before="2023-01-01", df_lib=None):
     """One row per decided fight with A/B features, label a_win, and metadata."""
-    long_e, elo_now = add_elo(long, fights)
+    rt_pre, _ = RT.compute(fights)
     P = league_priors(long, before=prior_before)
     pre = cumulative(long, df_lib=df_lib)
-    pre = pre.merge(long_e[["fight_id", "fighter", "elo"]], on=["fight_id", "fighter"], how="left")
+    pre = pre.merge(rt_pre[["fight_id", "fighter", "elo", "g_r", "g_rd"]], on=["fight_id", "fighter"], how="left")
     R = rates(pre, P)
-    per = pd.concat([pre[["fight_id", "fighter", "date", "days_off", "elo"]], R], axis=1)
+    per = pd.concat([pre[["fight_id", "fighter", "date", "days_off", "elo", "g_r", "g_rd"]], R], axis=1)
     per = per.loc[:, ~per.columns.duplicated()]
+    sos = schedule(long, rt_pre, per, P)
+    per = per.merge(sos[["fight_id", "fighter"] + SOS_COLS], on=["fight_id", "fighter"], how="left")
 
     fx = fights[fights["a_win"].notna()].copy()
     A = fx[["fight_id", "a", "date"]].rename(columns={"a": "fighter"}).merge(
@@ -231,7 +276,7 @@ def build_training_table(fights, long, fighters, prior_before="2023-01-01", df_l
     X["women"] = fx["women"].values
     meta = fx[["fight_id", "date", "a", "b", "a_win", "method", "end_round", "sched_rounds",
                "weightclass", "EVENT"]].reset_index(drop=True)
-    sim_cols = ["ko_off", "ko_def", "sub_off", "sub_def", "elo"]
+    sim_cols = ["ko_off", "ko_def", "sub_off", "sub_def", "elo", "g_r", "g_rd"]
     simA = A[sim_cols].add_prefix("a_").reset_index(drop=True)
     simB = Bf[sim_cols].add_prefix("b_").reset_index(drop=True)
     return X.reset_index(drop=True), meta, pd.concat([simA, simB], axis=1), P
@@ -243,8 +288,9 @@ def swap(X: pd.DataFrame) -> pd.DataFrame:
     for c in X.columns:
         if c.startswith("d_"):
             S[c] = -X[c]
-    for c in ("elo", "age", "n_prior"):
-        S[f"a_{c}"], S[f"b_{c}"] = X[f"b_{c}"], X[f"a_{c}"]
+    for c in SWAP_COLS:
+        if f"a_{c}" in X:
+            S[f"a_{c}"], S[f"b_{c}"] = X[f"b_{c}"], X[f"a_{c}"]
     return S
 
 
@@ -252,16 +298,27 @@ class FighterIndex:
     """Current (post-last-fight) features for live predictions in the app."""
 
     def __init__(self, fights, long, fighters, P):
-        _, self.elo = add_elo(long, fights)
+        rt_pre, self.state = RT.compute(fights)
         cur = current_sums(long)
         R = rates(cur, P)
         self.table = pd.concat([cur[["fighter", "last_date"]], R], axis=1).set_index("fighter")
-        self.table["elo"] = self.table.index.map(self.elo).astype(float)
+        # strength of schedule needs everyone's pre-fight rates at each past fight
+        pre = cumulative(long, df_lib=pd)
+        Rp = rates(pre, P)
+        per = pd.concat([pre[["fight_id", "fighter"]], Rp], axis=1)
+        sos = schedule(long, rt_pre, per, P)
+        last_sos = sos.groupby("fighter").tail(1).set_index("fighter")
+        for c in SOS_COLS:
+            self.table[c] = last_sos[f"post_{c}"]
         self.fighters = fighters.set_index("fighter")
         last = long.sort_values("date").groupby("fighter").tail(1).set_index("fighter")
         self.table["weightclass"] = last["weightclass"]
         self.table["women"] = last["women"]
+        self.table["elo"] = [self.state[n]["elo"] for n in self.table.index]
         self.long = long
+        # fight-by-fight history with opponent rating at the time (for the SOS tab)
+        h = long.merge(rt_pre[["fight_id", "fighter", "opp_elo"]], on=["fight_id", "fighter"], how="left")
+        self.history = h[["fighter", "date", "opp", "win", "method", "end_round", "weightclass", "opp_elo"]]
 
     def names(self, min_fights: int = 1, active_since: str | None = None):
         t = self.table[self.table["n_prior"] >= min_fights]
@@ -277,7 +334,18 @@ class FighterIndex:
         r["age"] = (on - dob).days / 365.25 if pd.notna(dob) else np.nan
         r["reach"] = self.fighters["reach"].get(name, np.nan)
         r["height"] = self.fighters["height"].get(name, np.nan)
+        cur = RT.current(self.state, name, on)
+        r["elo"], r["g_r"], r["g_rd"] = cur["elo"], cur["g_r"], cur["g_rd"]
         return r.reset_index(drop=True)
+
+    def schedule_view(self, name: str, n: int = 8) -> pd.DataFrame:
+        h = self.history[self.history["fighter"] == name].sort_values("date", ascending=False).head(n)
+        res = h["win"].map({1.0: "W", 0.0: "L"}).fillna("D/NC")
+        return pd.DataFrame({
+            "Date": h["date"].dt.date.values, "Opponent": h["opp"].values, "Result": res.values,
+            "Method": h["method"].fillna("—").values, "Round": h["end_round"].values,
+            "Opp. Elo then": h["opp_elo"].round(0).values,
+        })
 
     def matchup(self, a: str, b: str, sched_rounds=3, title=0, on_date=None):
         on_date = on_date or pd.Timestamp.today().normalize()

@@ -76,6 +76,7 @@ def _method(m: str) -> str | None:
 # ---------- main loaders ----------
 def load(raw_dir: Path = RAW) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Return (fights, long, fighters)."""
+    download(raw_dir=raw_dir)  # no-op if the CSVs are already there
     ev = pd.read_csv(raw_dir / "ufc_event_details.csv")
     res = pd.read_csv(raw_dir / "ufc_fight_results.csv")
     st = pd.read_csv(raw_dir / "ufc_fight_stats.csv")

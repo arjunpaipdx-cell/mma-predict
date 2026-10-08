@@ -8,10 +8,10 @@ chance (hazard) of finishing the other by KO or by submission:
 
 Each simulated fight also draws a random "form" multiplier per fighter (good
 night / bad night), and hazards rise slightly in later rounds (fatigue,
-damage). If nobody is finished, the fight goes to the judges. The judges'
-probability is chosen so the simulator's overall win probability matches the
-XGBoost model, which keeps the two models consistent while the simulator adds
-*how* and *when*.
+damage). If nobody is finished, the fight goes to the judges, who favour the
+model's pick. Finally each fighter's outcomes are rescaled so the total win
+probability equals the ensemble model's exactly: the model decides *who*, the
+simulator decides *how* and *when*.
 
 All matchups × all simulations run as one batch of arrays, which is where the
 GPU parallelism pays off (see benchmarks/bench_sim.py).
@@ -101,8 +101,8 @@ def _simulate_chunk(ko_a, sub_a, ko_b, sub_b, p_win, rounds, S, sigma, fatigue, 
         counts[:, c - 1] = (res == c).sum(axis=1)
     counts = counts / S
     p_dec = alive.mean(axis=1)
-    p_a_fin = counts[:, :15].sum(axis=1)
-    q = xp.clip((p_win - p_a_fin) / xp.maximum(p_dec, 1e-6), 0.02, 0.98)
+    # Judges favour the better fighter: decision win chance = model probability (bounded).
+    q = xp.clip(p_win, 0.05, 0.95)
 
     out = xp.zeros((m, 2, 3, 5), dtype=f32)
     c3 = counts.reshape(m, 2, 3, 5)
@@ -111,6 +111,12 @@ def _simulate_chunk(ko_a, sub_a, ko_b, sub_b, p_win, rounds, S, sigma, fatigue, 
     idx = xp.arange(m)
     out[idx, 0, 2, last] = p_dec * q
     out[idx, 1, 2, last] = p_dec * (1 - q)
+    # Rescale each side so the simulator's total win probability equals the model's exactly,
+    # keeping the simulator's shape of *how* and *when* each fighter wins.
+    pa = out[:, 0].sum(axis=(1, 2))
+    pb = out[:, 1].sum(axis=(1, 2))
+    out[:, 0] *= (p_win / xp.maximum(pa, 1e-9))[:, None, None]
+    out[:, 1] *= ((1 - p_win) / xp.maximum(pb, 1e-9))[:, None, None]
     return B.to_host(out).astype(np.float64)
 
 

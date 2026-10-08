@@ -1,4 +1,12 @@
-"""Train the win-probability model with XGBoost (CUDA when available).
+"""Train the win-probability models and the stacked ensemble.
+
+Models (the same family sportsbooks and serious modellers use for MMA):
+    1. Elo                 rating system baseline
+    2. Glicko-2            rating + uncertainty (RD); no training needed
+    3. Logistic regression on ~55 standardised stat/SOS differentials
+    4. XGBoost (CUDA)      gradient-boosted trees for non-linear interactions
+    5. Stacked ensemble    logistic regression over models 2-4's log-odds,
+                           fit on the validation year (blends + recalibrates)
 
 Split is strictly chronological so the test set looks like real future fights:
     train: fights before 2023-01-01
@@ -19,6 +27,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss, roc_auc_score
 
 from . import backend as B
@@ -34,6 +46,24 @@ BASE_PARAMS = dict(
     learning_rate=0.03, max_depth=3, min_child_weight=20, subsample=0.8,
     colsample_bytree=0.7, reg_lambda=5.0, n_estimators=2000,
 )
+
+
+STACK_INPUTS = ["Glicko-2", "Logistic regression", "XGBoost"]
+
+
+def logit(p):
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return np.log(p / (1 - p))
+
+
+def sigmoid(z):
+    return 1 / (1 + np.exp(-z))
+
+
+def make_logreg():
+    """Standardised, L2-regularised logistic regression (missing values -> median)."""
+    return make_pipeline(SimpleImputer(strategy="median"), StandardScaler(),
+                         LogisticRegression(C=0.05, max_iter=2000))
 
 
 def augment(X, y):
@@ -109,23 +139,51 @@ def main(sweep: int = 0, seed: int = 0):
         t_sweep = time.perf_counter() - t0
         print(f"sweep of {sweep} configs on {B.xgb_device()}: {t_sweep:.1f}s")
 
+    # ---- base model 1: XGBoost (non-linear interactions)
     model = fit(best_params, Xtr, ytr, Xva, yva)
     n_trees = model.best_iteration + 1
-    p_te = sym_predict(model, X[te])
+
+    # ---- base model 2: regularised logistic regression (the classic, interpretable book model)
+    lr = make_logreg().fit(Xtr, ytr)
+
+    # ---- base model 3: Glicko-2 ratings alone (no training needed)
+    def base_logits(xgb_m, lr_m, Xs):
+        return np.column_stack([
+            Xs["d_glicko_logit"].values,
+            logit(sym_predict(lr_m, Xs)),
+            logit(sym_predict(xgb_m, Xs)),
+        ])
+
+    # ---- stacked ensemble: logistic regression on the three models' log-odds, fit on 2023 only.
+    # No intercept keeps P(A beats B) = 1 - P(B beats A); the fitted weights also recalibrate.
+    Lva = base_logits(model, lr, X[va])
+    stack = LogisticRegression(fit_intercept=False, C=1.0)
+    stack.fit(np.vstack([Lva, -Lva]), np.concatenate([y[va], 1 - y[va]]))
+    w = stack.coef_[0]
+
+    Lte = base_logits(model, lr, X[te])
+    p_te = sigmoid(Lte @ w)
     report = {
         "device": B.xgb_device(),
         "backend": B.describe(),
         "data_through": str(fights["date"].max().date()),
         "split": {"train": f"{MIN_DATE}..{VAL_START}", "val": f"{VAL_START}..{TEST_START}", "test": f"{TEST_START}.."},
         "test_model": metrics(y[te], p_te),
-        "test_elo_baseline": metrics(y[te], elo_baseline(X[te])),
+        "test_by_model": {
+            "Elo": metrics(y[te], elo_baseline(X[te])),
+            "Glicko-2": metrics(y[te], sigmoid(Lte[:, 0])),
+            "Logistic regression": metrics(y[te], sigmoid(Lte[:, 1])),
+            "XGBoost": metrics(y[te], sigmoid(Lte[:, 2])),
+            "Stacked ensemble": metrics(y[te], p_te),
+        },
+        "stack_weights": dict(zip(STACK_INPUTS, map(float, w))),
         "n_trees": int(n_trees),
         "params": best_params,
         "feature_seconds": t_feat,
         "sweep_configs": sweep,
         "sweep_seconds": t_sweep,
     }
-    # calibration table on the test set
+    report["test_elo_baseline"] = report["test_by_model"]["Elo"]
     bins = np.linspace(0, 1, 11)
     idx = np.digitize(p_te, bins) - 1
     report["calibration"] = [
@@ -133,21 +191,33 @@ def main(sweep: int = 0, seed: int = 0):
          "pred": float(p_te[idx == i].mean()), "actual": float(y[te][idx == i].mean())}
         for i in range(10) if (idx == i).sum() > 0
     ]
-    print(json.dumps({k: report[k] for k in ("test_model", "test_elo_baseline")}, indent=2))
+    for k, v in report["test_by_model"].items():
+        print(f"  {k:<20} acc {v['accuracy']:.3f}  logloss {v['logloss']:.4f}  brier {v['brier']:.4f}")
+    print("  stack weights:", {k: round(v, 3) for k, v in report["stack_weights"].items()})
 
-    # Final model: refit on everything with the chosen tree count, for live predictions.
+    # ---- final models: refit on everything for live predictions (stack weights stay from 2023)
     allm = d >= MIN_DATE
     Xall, yall = augment(X[allm], y[allm])
-    final_params = {**best_params, "n_estimators": n_trees}
-    final = xgb.XGBClassifier(**final_params, device=B.xgb_device())
+    final = xgb.XGBClassifier(**{**best_params, "n_estimators": n_trees}, device=B.xgb_device())
     final.fit(Xall, yall, verbose=False)
+    lr_final = make_logreg().fit(Xall, yall)
 
     ART.mkdir(exist_ok=True)
     final.save_model(ART / "model.json")
+    imp, sc, clf = lr_final
+    (ART / "logreg.json").write_text(json.dumps({
+        "features": list(X.columns), "median": list(map(float, imp.statistics_)),
+        "mean": list(map(float, sc.mean_)), "scale": list(map(float, sc.scale_)),
+        "coef": list(map(float, clf.coef_[0])), "intercept": float(clf.intercept_[0]),
+    }))
     (ART / "metrics.json").write_text(json.dumps(report, indent=2))
-    (ART / "meta.json").write_text(json.dumps({"features": list(X.columns), "priors": P}, indent=2))
+    (ART / "meta.json").write_text(json.dumps({
+        "features": list(X.columns), "priors": P,
+        "stack_inputs": STACK_INPUTS, "stack_weights": list(map(float, w)),
+        "logreg_coefs": dict(zip(X.columns, map(float, lr_final[-1].coef_[0]))),
+    }, indent=2))
     pd.DataFrame({"fight_id": meta["fight_id"][te].values, "p_a": p_te}).to_csv(ART / "test_preds.csv", index=False)
-    print(f"saved model + metrics to {ART}")
+    print(f"saved models + metrics to {ART}")
     return report
 
 

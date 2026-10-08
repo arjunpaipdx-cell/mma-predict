@@ -1,0 +1,8 @@
+{
+  "backend": "GPU: Tesla T4 | cuDF=yes | CuPy=yes",
+  "stages": {
+    "features (cuDF)": {"rows": 356880, "cpu_s": 1.6399178929999607, "gpu_s": 1.1987402880000104, "speedup": 1.3680343519078808},
+    "xgboost train": {"rows": 140288, "cpu_s": 18.15653319100005, "gpu_s": 2.582382874000018, "speedup": 7.030922243871697},
+    "monte carlo (CuPy)": {"fights_simulated": 99000000, "cpu_s": 41.74991634700001, "gpu_s": 2.224880065999969, "speedup": 18.765018836300992}
+  }
+}

@@ -109,7 +109,7 @@ def plot(results):
     names = list(results["stages"])
     cpu = [results["stages"][n]["cpu_s"] for n in names]
     gpu = [results["stages"][n].get("gpu_s", np.nan) for n in names]
-    fig, ax = plt.subplots(figsize=(7, 3.2), dpi=150)
+    fig, ax = plt.subplots(figsize=(7, 3.4), dpi=150)
     yy = np.arange(len(names))
     ax.barh(yy + 0.2, cpu, height=0.38, color="#9aa0a6", label="CPU")
     ax.barh(yy - 0.2, gpu, height=0.38, color="#76b900", label="GPU")
@@ -121,8 +121,9 @@ def plot(results):
     ax.invert_yaxis()
     ax.set_xlabel("seconds (lower is better)")
     ax.spines[["top", "right"]].set_visible(False)
-    ax.legend(frameon=False, loc="lower right")
-    ax.set_title(results["backend"], fontsize=8, loc="left", color="#555")
+    ax.set_xlim(0, max(cpu) * 1.25)
+    ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.14), ncol=2)
+    fig.text(0.01, 0.01, results["backend"], fontsize=7, color="#555")
     fig.tight_layout()
     fig.savefig(ART / "benchmarks.png")
 
