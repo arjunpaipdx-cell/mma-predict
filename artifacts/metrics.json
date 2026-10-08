@@ -1,0 +1,84 @@
+{
+  "device": "cpu",
+  "backend": "CPU fallback (no CUDA device found) | pandas + NumPy",
+  "data_through": "2026-10-03",
+  "split": {
+    "train": "2001-01-01..2023-01-01",
+    "val": "2023-01-01..2024-01-01",
+    "test": "2024-01-01.."
+  },
+  "test_model": {
+    "n": 1451,
+    "accuracy": 0.6395589248793935,
+    "logloss": 0.6433534622192383,
+    "brier": 0.22609375417232513,
+    "auc": 0.67377688172043
+  },
+  "test_elo_baseline": {
+    "n": 1451,
+    "accuracy": 0.5568573397656789,
+    "logloss": 0.6769284242985674,
+    "brier": 0.24202009587496315,
+    "auc": 0.5859312596006144
+  },
+  "n_trees": 277,
+  "params": {
+    "objective": "binary:logistic",
+    "eval_metric": "logloss",
+    "tree_method": "hist",
+    "learning_rate": 0.03,
+    "max_depth": 3,
+    "min_child_weight": 20,
+    "subsample": 0.8,
+    "colsample_bytree": 0.7,
+    "reg_lambda": 5.0,
+    "n_estimators": 2000
+  },
+  "feature_seconds": 0.19485301400004573,
+  "sweep_configs": 0,
+  "sweep_seconds": 0.0,
+  "calibration": [
+    {
+      "bin": "0.2-0.3",
+      "n": 71,
+      "pred": 0.2648581564426422,
+      "actual": 0.323943661971831
+    },
+    {
+      "bin": "0.3-0.4",
+      "n": 258,
+      "pred": 0.35772475600242615,
+      "actual": 0.35658914728682173
+    },
+    {
+      "bin": "0.4-0.5",
+      "n": 306,
+      "pred": 0.450904905796051,
+      "actual": 0.4542483660130719
+    },
+    {
+      "bin": "0.5-0.6",
+      "n": 399,
+      "pred": 0.5530769228935242,
+      "actual": 0.6015037593984962
+    },
+    {
+      "bin": "0.6-0.7",
+      "n": 293,
+      "pred": 0.6448836326599121,
+      "actual": 0.6825938566552902
+    },
+    {
+      "bin": "0.7-0.8",
+      "n": 114,
+      "pred": 0.737255871295929,
+      "actual": 0.8421052631578947
+    },
+    {
+      "bin": "0.8-0.9",
+      "n": 10,
+      "pred": 0.8176868557929993,
+      "actual": 1.0
+    }
+  ]
+}

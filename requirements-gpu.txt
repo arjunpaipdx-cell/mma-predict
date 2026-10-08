@@ -1,0 +1,5 @@
+# Extra NVIDIA packages for a CUDA 12 machine. Google Colab GPU runtimes already
+# ship cuDF, CuPy and a CUDA-enabled XGBoost, so you don't need this file there.
+--extra-index-url=https://pypi.nvidia.com
+cudf-cu12
+cupy-cuda12x

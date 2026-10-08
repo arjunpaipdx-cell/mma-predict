@@ -1,0 +1,13 @@
+{
+  "device": "numpy",
+  "fights": 1438,
+  "sims_per_fight": 20000,
+  "seconds": 11.109400714000003,
+  "finish_brier": 0.23635807360629627,
+  "finish_brier_baseline": 0.24999564764073112,
+  "mean_pred_finish": 0.5155472532619032,
+  "actual_finish_rate": 0.502086230876217,
+  "finish_auc": 0.6421476268589734,
+  "method_accuracy": 0.5361613351877608,
+  "method_baseline_always_DEC": 0.49791376912378305
+}
