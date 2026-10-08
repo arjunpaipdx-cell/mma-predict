@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-from .data import load
+from .data import download, load
 from .features import FighterIndex, swap
 from .simulate import hazards, simulate, summarize
 from .train import ART
@@ -43,6 +43,7 @@ class Predictor:
         self.booster = xgb.Booster()
         self.booster.load_model(ART / "model.json")
         self.booster.set_param({"device": "cpu"})  # single-row inference is fastest on CPU
+        download()  # fetch the CSVs on first run
         fights, long, fighters = load()
         self.index = FighterIndex(fights, long, fighters, self.P)
         self.data_through = fights["date"].max()
