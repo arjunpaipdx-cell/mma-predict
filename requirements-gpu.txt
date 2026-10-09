@@ -3,3 +3,5 @@
 --extra-index-url=https://pypi.nvidia.com
 cudf-cu12
 cupy-cuda12x
+# Faster film study on an NVIDIA GPU (uses the CUDA / TensorRT execution providers)
+onnxruntime-gpu

@@ -9,7 +9,8 @@ A UFC fight pricing engine. Pick two fighters and it gives each one's win probab
 | Win models | **XGBoost on CUDA** + logistic regression | Gradient-boosted trees (GPU) and a regularised logistic model, blended by a stacked ensemble |
 | Fight simulator | **CuPy** | Round-by-round Monte Carlo with millions of simulated fights per matchup, batched across matchups on the GPU |
 | Pricing | `odds.py` | Fair odds → margin (power or multiplicative) → American/decimal; de-vig a real line and compute EV |
-| App | Streamlit | Prediction, odds board, strength of schedule, model breakdown, and a page of the actual formulas |
+| Film study | YOLO11-pose + ONNX Runtime (TensorRT/CUDA) | Tracks both fighters in uploaded footage and turns their poses into habits |
+| App | Streamlit | Predict (prediction, odds, résumé, method), Research (film study), About |
 
 Every module falls back to pandas/NumPy/CPU automatically (`mmapred/backend.py`), so the app also runs on a laptop with no NVIDIA GPU.
 
@@ -54,6 +55,19 @@ The simulator is fully parallel (every matchup × every simulated fight is indep
 
 ![benchmarks](artifacts/benchmarks.png)
 
+## Research: film study from fight footage
+
+The **Research** page tracks two fighters in an uploaded clip and measures how they actually fight.
+
+1. **Pose estimation.** YOLO11n-pose (exported to ONNX, `models/yolo11n-pose.onnx`) runs through ONNX Runtime. It uses **NVIDIA TensorRT or CUDA** when `onnxruntime-gpu` and a GPU are available, and the CPU otherwise. Each person in a frame gets a box and 17 body keypoints.
+2. **Who's who.** You match the two fighters to numbered boxes once. A tracker then follows them, using box overlap, position, and a colour histogram of shorts and torso, so the referee is ignored.
+3. **Camera correction.** Background feature points (optical flow plus RANSAC) measure the broadcast camera's pan and zoom, which is removed before deciding who moved forward.
+4. **Habits.** Measured in torso lengths, so zoom doesn't matter: stance (which foot leads relative to the opponent), range (clinch, punching range, or outside), time moving forward and backward, footwork, guard height, punch attempts (lead and rear hand), kicks, level changes, and time on the ground.
+
+Studies show up on the Predict page for those fighters and can be downloaded as JSON or per-frame CSV. They don't change the odds yet: a handful of clips isn't enough to train on. The aim is to collect enough tracked fights to test which habits actually predict results. `tests/test_vision.py` checks the habit logic on synthetic poses with known answers.
+
+Use footage you have the rights to use. The app doesn't download from YouTube or other sites.
+
 ## How it works
 
 ```mermaid
@@ -92,6 +106,7 @@ pip install -r requirements.txt          # Mac: brew install libomp first
 python -m mmapred.train                  # downloads data, trains, writes artifacts/
 python -m mmapred.evaluate               # simulator check on 2024+ fights
 streamlit run app.py
+python tests/test_vision.py              # film-study logic checks
 python -m mmapred.predict "Islam Makhachev" "Ilia Topuria" --rounds 5
 ```
 
@@ -110,5 +125,7 @@ python -m mmapred.predict "Islam Makhachev" "Ilia Topuria" --rounds 5
 - [ ] Feed real closing lines in as a feature and as a benchmark to beat.
 - [ ] Computer vision: pose estimation on fight footage with **TensorRT** to count strikes from video.
 - [ ] Serve the model with **NVIDIA Triton Inference Server**.
+
+The pose model is Ultralytics YOLO11n-pose (AGPL-3.0).
 
 Data: [Greco1899/scrape_ufc_stats](https://github.com/Greco1899/scrape_ufc_stats) (a mirror of UFCStats.com). For fun and learning, not betting advice.

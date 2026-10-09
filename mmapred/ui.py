@@ -29,7 +29,6 @@ html, body, .stApp, .stMarkdown, button, input, textarea, [data-baseweb] {{
   font-family:'Barlow', system-ui, sans-serif; }}
 .block-container {{ padding-top:1.6rem; padding-bottom:3rem; max-width:1120px; }}
 header[data-testid="stHeader"] {{ background:transparent; }}
-[data-testid="stSidebar"], [data-testid="collapsedControl"] {{ display:none; }}
 h1, h2, h3, h4 {{ font-family:var(--cond) !important; letter-spacing:.01em; color:var(--ink); }}
 h3 {{ font-size:1.25rem !important; font-weight:600 !important; margin:1.4rem 0 .4rem !important; padding:0 !important; }}
 .num {{ font-variant-numeric:tabular-nums; }}
@@ -99,6 +98,16 @@ table.tape th.hl {{ text-align:center; }}
 .factor-head {{ display:grid; grid-template-columns:1fr 2.2fr 1fr; gap:.6rem; font-family:var(--cond); font-size:.75rem;
   text-transform:uppercase; letter-spacing:.06em; font-weight:600; padding-bottom:.3rem; border-bottom:1px solid var(--ink); }}
 .res-W {{ color:var(--good); font-weight:600; }} .res-L {{ color:var(--muted); font-weight:600; }}
+
+/* page titles */
+h2.oo-page {{ font-size:1.9rem !important; font-weight:700 !important; margin:.2rem 0 .2rem !important; padding:0 !important; }}
+.oo-lede {{ font-size:1.05rem; max-width:46rem; margin-bottom:.6rem; }}
+
+/* navigation row under the masthead (Streamlit marks the current page with a grey pill) */
+.st-key-oo_nav {{ gap:.4rem !important; margin:-.5rem 0 1rem; }}
+.st-key-oo_nav [data-testid="stPageLink-NavLink"] {{ border-radius:2px; padding:.2rem .6rem; }}
+.st-key-oo_nav [data-testid="stPageLink-NavLink"] p {{ font-family:var(--cond) !important; text-transform:uppercase;
+  letter-spacing:.07em; font-weight:600 !important; font-size:.95rem !important; }}
 
 /* about */
 .oo-about-name {{ font-family:var(--cond); font-weight:700; font-size:2.2rem; line-height:1; margin-top:1.2rem; }}

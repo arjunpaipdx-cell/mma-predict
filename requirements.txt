@@ -6,3 +6,6 @@ xgboost>=2.0
 matplotlib>=3.8
 streamlit>=1.50
 altair>=5
+# film study (Research page)
+onnxruntime>=1.17
+opencv-python-headless>=4.8
