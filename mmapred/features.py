@@ -347,6 +347,27 @@ class FighterIndex:
             "Opp. Elo then": h["opp_elo"].round(0).values,
         })
 
+    def _fights(self, name: str) -> pd.DataFrame:
+        return self.history[self.history["fighter"] == name].sort_values("date", ascending=False)
+
+    def record(self, name: str) -> tuple[int, int, int]:
+        """UFC record as (wins, losses, draws/no contests)."""
+        h = self._fights(name)
+        w, l = int((h["win"] == 1).sum()), int((h["win"] == 0).sum())
+        return w, l, len(h) - w - l
+
+    def recent_form(self, name: str, n: int = 3) -> list[str]:
+        return self._fights(name).head(n)["win"].map({1.0: "W", 0.0: "L"}).fillna("D").tolist()
+
+    def best_win(self, name: str):
+        """The highest-rated opponent beaten (rating at the time), or None."""
+        h = self._fights(name)
+        h = h[h["win"] == 1]
+        if h.empty:
+            return None
+        r = h.loc[h["opp_elo"].idxmax()]
+        return r["opp"], r["date"], float(r["opp_elo"])
+
     def matchup(self, a: str, b: str, sched_rounds=3, title=0, on_date=None):
         on_date = on_date or pd.Timestamp.today().normalize()
         A, Bf = self.row(a, on_date), self.row(b, on_date)
